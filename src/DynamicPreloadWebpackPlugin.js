@@ -1,3 +1,5 @@
+const path = require('path')
+
 class DynamicPreloadWebpackPlugin {
     apply(compiler) {
         compiler.hooks.compilation.tap(this.constructor.name, compilation => {
@@ -10,11 +12,11 @@ class DynamicPreloadWebpackPlugin {
     addLinks(htmlData, compilation) {
         const { assets } = compilation
 
-        const path = compilation.options.output.publicPath || compilation.options.output.path
+        const publicPath = compilation.options.output.publicPath || compilation.options.output.path
         Object.keys(assets)
             .filter(asset => !this.isEntryScript(asset, compilation))
             .map(asset => {
-                const link = this.createLink(`${path}/${asset}`)
+                const link = this.createLink(path.resolve(publicPath, asset))
                 htmlData.html = htmlData.html.replace('</head>', link + '</head>')
             })
         return htmlData
