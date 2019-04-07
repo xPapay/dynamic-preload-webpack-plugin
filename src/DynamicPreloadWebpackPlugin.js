@@ -14,7 +14,7 @@ class DynamicPreloadWebpackPlugin {
 
         const publicPath = compilation.options.output.publicPath || compilation.options.output.path
         Object.keys(assets)
-            .filter(asset => !this.isEntryScript(asset, compilation))
+            .filter(asset => !this.isLoadedByHtmlTemplate(asset, htmlData.assets))
             .map(asset => {
                 const link = this.createLink(path.resolve(publicPath, asset))
                 htmlData.html = htmlData.html.replace('</head>', link + '</head>')
@@ -22,12 +22,9 @@ class DynamicPreloadWebpackPlugin {
         return htmlData
     }
 
-    isEntryScript(asset, compilation) {
-        return compilation.entries.some(entry => {
-            return Array.from(entry.chunksIterable).some(chunk => {
-                return chunk.files.some(file => asset === file)
-            })
-        })
+    isLoadedByHtmlTemplate(asset, htmlAssets) {
+        const allHtmlAssets = [ ...htmlAssets.css, ...htmlAssets.js ]
+        return allHtmlAssets.find(htmlAsset => htmlAsset === asset)
     }
 
     createLink(asset) {
