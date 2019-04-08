@@ -57,6 +57,8 @@ it('adds preload tags for all late discovered assets of all entries', done => {
     compiler.run((err, result) => {
         expect(err).toBeFalsy()
         expect(JSON.stringify(result.compilation.errors)).toBe('[]')
+        const preloader = result.compilation.assets['preloader.js']
+        expect(preloader).toBeUndefined()
         const html = result.compilation.assets['index.html'].source()
         expect(html).toContain('<link rel="preload" href="/dist/hero.jpg" as="image">')
         done()
@@ -131,8 +133,41 @@ it('creates preloader when there are route dependent modules', (done) => {
         expect(err).toBeFalsy()
         expect(JSON.stringify(result.compilation.errors)).toBe('[]')
         const preloader = result.compilation.assets['preloader.js'].source()
-        expect(preloader).toContain('/dist/hero.jpg')
-        expect(preloader).toContain('/dist/homepage.chunk.js')
+        expect(preloader).toContain('hero.jpg')
+        expect(preloader).toContain('homepage.chunk.js')
         done()
     })
 })
+
+it('implicitly preloads all other assets in same chunk as explicitly preloaded module', done => {
+    const config = baseConfig({
+        entry: {
+            app: path.resolve(__dirname, './fixtures/import-two-assets.js')
+        },
+        plugins: [
+            new HTMLWebpackPlugin(),
+            new MiniCssExtractPlugin(),
+            new DynamicPreloadWebpackPlugin({
+                '/': './style.css'
+            })
+        ]
+    })
+
+    const compiler = webpack(config)
+    compiler.outputFileSystem = fs
+
+    compiler.run((err, result) => {
+        expect(err).toBeFalsy()
+        expect(JSON.stringify(result.compilation.errors)).toBe('[]')
+        const html = result.compilation.assets['index.html'].source()
+        expect(html).not.toContain('/dist/twoassets.chunk.js')
+        expect(html).not.toContain('/dist/twoassets.css')
+    
+        const preloader = result.compilation.assets['preloader.js'].source()
+        expect(preloader).toContain('hero.jpg')
+        expect(preloader).toContain('twoassets.chunk.js')
+        expect(preloader).toContain('twoassets.css')
+        done()
+    })
+})
+

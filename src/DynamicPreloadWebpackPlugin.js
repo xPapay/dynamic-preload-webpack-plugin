@@ -11,12 +11,15 @@ class DynamicPreloadWebpackPlugin {
         compiler.hooks.compilation.tap(this.constructor.name, compilation => {
             this.publicPath = compilation.options.output.publicPath || compilation.options.output.path
             compilation.hooks.htmlWebpackPluginAfterHtmlProcessing.tapAsync(this.constructor.name, (htmlData, cb) => {
-                cb(null, this.addLinks(htmlData, compilation))
+                cb(null, this.createPreloading(htmlData, compilation))
             })
         })
 
         compiler.hooks.emit.tap(this.constructor.name, compilation => {
-            const preloaderSource = this.buildPreloader()
+            if (!this.hasDynamicPreloads()) {
+                return
+            }
+            const preloaderSource = this.buildPreloaderSource()
             compilation.assets['preloader.js'] = {
                 source: () => preloaderSource,
                 size: () => preloaderSource.length
@@ -24,21 +27,47 @@ class DynamicPreloadWebpackPlugin {
         })
     }
 
-    buildPreloader() {
+    hasDynamicPreloads() {
+        return ! (Object.entries(this.preloader).length === 0 && this.preloader.constructor === Object)
+    }
+
+    buildPreloaderSource() {
         return JSON.stringify(this.preloader)
     }
 
-    addLinks(htmlData, compilation) {
+    createPreloading(htmlData, compilation) {
         const { assets } = compilation
+        Object.keys(assets).map(asset => {
+            if (this.isLoadedByHtmlTemplate(path.resolve(this.publicPath, asset), htmlData.assets)) return
+            if (this.isLateDiscoveredAppShelfAsset(asset, Object.keys(htmlData.assets.chunks), compilation)) {
+                return htmlData.html = this.preloadStatically(asset, htmlData.html)
+            }
 
-        Object.keys(assets)
-            .filter(asset => !this.isLoadedByHtmlTemplate(path.resolve(this.publicPath, asset), htmlData.assets))
-            .filter(asset => !this.isRouteSpecificModule(asset, compilation))
-            .map(asset => {
-                const link = this.createLink(path.resolve(this.publicPath, asset))
-                htmlData.html = htmlData.html.replace('</head>', link + '</head>')
-            })
+            if (this.isRouteSpecificAsset(asset, compilation)) {
+                this.preloadDynamically(asset, compilation)
+            }
+        })
+
         return htmlData
+    }
+
+    preloadStatically(asset, html) {
+        const link = this.createLink(path.resolve(this.publicPath, asset))
+        return this.appendLinkToHead(link, html)
+    }
+
+    preloadDynamically(asset, compilation) {
+        const chunk = this.getChunk(asset, compilation)
+        const modules = chunk.getModules()
+        const assets = this.getChunkAssets(chunk)
+        const urls = Object.keys(this.preloads)
+            .filter(url => modules.some(module => module.rawRequest === this.preloads[url]))
+        this.addPreloaderAssets(assets, urls)
+    }
+
+    isLateDiscoveredAppShelfAsset(asset, htmlChunks, compilation) {
+        return compilation.chunks.filter(chunk => htmlChunks.indexOf(chunk.name) > -1)
+            .some(chunk => this.getChunkAssets(chunk).includes(asset))
     }
 
     isLoadedByHtmlTemplate(asset, htmlAssets) {
@@ -46,68 +75,38 @@ class DynamicPreloadWebpackPlugin {
         return allHtmlAssets.find(htmlAsset => htmlAsset === asset)
     }
 
-    isRouteSpecificModule(asset, compilation) {
+    isRouteSpecificAsset(asset, compilation) {
         if (!this.preloads) return false
 
-        const module = this.getAssetModule(asset, compilation)
-        if (!module) {
-            console.log(`This is weird. ${asset} was not found in any of the modules. TODO:`)
-            return false
-        }
-        
-        const isExplicitlyPreloaded = Object.keys(this.preloads).find(url => this.preloads[url] === module.rawRequest)
-        
-        if (isExplicitlyPreloaded) {
-            const url = isExplicitlyPreloaded
-            this.addPreloaderAsset(asset, url)
-            return true
-        }
-        
-        const ancestorModules = this.getAncestorModules(module)
-        const isImplicitlyPreloaded = Object.keys(this.preloads)
-            .find(url => ancestorModules.some(module => module.rawRequest === this.preloads[url]))
-        
-            if (isImplicitlyPreloaded) {
-            const url = isImplicitlyPreloaded
-            this.addPreloaderAsset(asset, url)
-            return true
-        }
-
-        return false
+        const chunk = this.getChunk(asset, compilation)
+        const modules = chunk.getModules()
+        return modules.some(module => Object.values(this.preloads).includes(module.rawRequest))
     }
 
-    addPreloaderAsset(asset, url) {
-        asset = {
-            rel: 'preload',
-            href: path.resolve(this.publicPath, asset),
-            as: this.getAs(asset)
-        }
-
-        this.preloader[url] 
-            ? this.preloader[url].push(asset)
-            : this.preloader[url] = [asset]
+    getChunkAssets(chunk) {
+        const files = chunk.files
+        const assets = Array.from(chunk.modulesIterable).reduce((accumulator, { buildInfo }) => {
+            let assets = buildInfo && buildInfo.assets && Object.keys(buildInfo.assets)
+            return assets ? accumulator = [ ...accumulator, ...assets ] : accumulator
+        }, [])
+        return [ ...files, ...assets ]
     }
 
-    getAncestorModules(module, accumulate = []) {
-        if (module.issuer) {
-            accumulate.push(module)
-            return this.getAncestorModules(module.issuer, accumulate)
-        }
-        accumulate.push(module)
-        return accumulate
+    getChunk(asset, compilation) {
+        // TODO: Can more than one chunk point to same file?
+        return compilation.chunks.find(chunk => this.getChunkAssets(chunk).includes(asset))
     }
 
-    getAssetModule(asset, compilation) {
-        return compilation.modules.find(module => {
-            const fileFound = Array.from(module.chunksIterable).some(chunk => {
-                return chunk.files.some(file => file === asset)
-            })
+    addPreloaderAssets(assets, urls) {
+        const assetsObject = assets.reduce((accumulator, asset) => {
+            return accumulator = { ...accumulator, [asset]: true}
+        }, {})
 
-            if (fileFound) return true
-
-            const { buildInfo } = module
-            const assetFound = buildInfo && buildInfo.assets && Object.keys(buildInfo.assets).find(file => file === asset)
-            return assetFound
+        urls.map(url => {
+            if (! this.preloader[url]) {
+                this.preloader[url] = {}
+            }
+            this.preloader[url] = { ...this.preloader[url], ...assetsObject }
         })
     }
 
@@ -118,6 +117,10 @@ class DynamicPreloadWebpackPlugin {
             as: this.getAs(asset)
         }
         return `<link rel="${data.rel}" href="${data.href}" as="${data.as}">`
+    }
+
+    appendLinkToHead(link, html) {
+        return html.replace('</head>', link + '</head>')
     }
 
     getAs(file) {
