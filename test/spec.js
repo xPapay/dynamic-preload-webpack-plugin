@@ -3,7 +3,7 @@ const path = require('path')
 const MemoryFileSystem = require('memory-fs')
 const fs = new MemoryFileSystem()
 const HTMLWebpackPlugin = require('html-webpack-plugin')
-const DynamicPreloadWebpackPlugin = require('../src/DynamicPreloadWebpackPlugin')
+const DynamicPreloadWebpackPlugin = require('../src/index')
 const MiniCssExtractPlugin = require('mini-css-extract-plugin')
 
 expect.extend({
