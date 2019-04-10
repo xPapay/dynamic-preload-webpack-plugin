@@ -33,17 +33,6 @@ class DynamicPreloadWebpackPlugin {
                 cb(null, this.createPreloading(htmlData, compilation))
             })
         })
-
-        compiler.hooks.emit.tap(this.constructor.name, compilation => {
-            if (!this.hasDynamicPreloads()) {
-                return
-            }
-            const preloaderSource = this.buildPreloaderSource()
-            compilation.assets['preloader.js'] = {
-                source: () => preloaderSource,
-                size: () => preloaderSource.length
-            }
-        })
     }
 
     hasDynamicPreloads() {
@@ -80,12 +69,26 @@ class DynamicPreloadWebpackPlugin {
             }
         })
 
+        if (this.hasDynamicPreloads()) {
+            const script = this.createPreloadScript(compilation, 'preloader.js')
+            htmlData.html = this.appendToHead(script, htmlData.html)
+        }
+
         return htmlData
+    }
+
+    createPreloadScript(compilation, name = 'preloader.js') {
+        const preloaderSource = this.buildPreloaderSource()
+        compilation.assets[name] = {
+            source: () => preloaderSource,
+            size: () => preloaderSource.length
+        }
+        return `<script src="${path.resolve(this.publicPath, name)}">`
     }
 
     preloadStatically(asset, html) {
         const link = this.createLink(asset)
-        return this.appendLinkToHead(link, html)
+        return this.appendToHead(link, html)
     }
 
     preloadDynamically(asset, compilation) {
@@ -216,8 +219,8 @@ class DynamicPreloadWebpackPlugin {
         return `<link rel="${data.rel}" href="${data.href}" as="${data.as}">`
     }
 
-    appendLinkToHead(link, html) {
-        return html.replace('</head>', link + '</head>')
+    appendToHead(htmlToAppend, html) {
+        return html.replace('</head>', htmlToAppend + '</head>')
     }
 
     getAs(file) {

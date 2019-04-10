@@ -160,6 +160,8 @@ it('creates preloader when there are route dependent modules', (done) => {
     compiler.run((err, result) => {
         expect(err).toBeFalsy()
         expect(JSON.stringify(result.compilation.errors)).toBe('[]')
+        const html = result.compilation.assets['index.html'].source()
+        expect(html).toMatch(/.*<script src="\/dist\/preloader\.js">.*<\/head>/)
         expect(result.compilation.assets['preloader.js']).toBeDefined()
         const preloaderSource = result.compilation.assets['preloader.js'].source()
         const preloader = getPreloaderData(preloaderSource)
