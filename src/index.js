@@ -224,7 +224,7 @@ class DynamicPreloadWebpackPlugin {
     }
 
     getAs(file) {
-        if (file.match(/\.(jpg)$/)) return 'image'
+        if (file.match(/\.(jpe?g|png|svg|gif)$/)) return 'image'
         if (file.match(/\.(css)$/)) return 'style'
         return 'script'
     }
