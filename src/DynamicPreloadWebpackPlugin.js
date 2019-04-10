@@ -2,9 +2,28 @@ const path = require('path')
 
 class DynamicPreloadWebpackPlugin {
     constructor(options) {
-        this.preloads = options
+        this.preloads = null
+        this.routeModuleMap = {}
         this.preloader = {}
         this.publicPath = ''
+        this.parseOptions(options)
+    }
+
+    parseOptions(options) {
+        if (!options) return
+
+        if (options.urls) {
+            Object.keys(options.urls).map(url => {
+                if (typeof options.urls[url] === 'string') {
+                    options.urls[url] = [options.urls[url]]
+                }
+            })
+            this.preloads = options.urls
+        }
+
+        if (options.routeModuleMap) {
+            this.routeModuleMap = options.routeModuleMap
+        }
     }
 
     apply(compiler) {
@@ -57,12 +76,59 @@ class DynamicPreloadWebpackPlugin {
     }
 
     preloadDynamically(asset, compilation) {
-        const chunk = this.getChunk(asset, compilation)
-        const modules = chunk.getModules()
-        const assets = this.getChunkAssets(chunk)
-        const urls = Object.keys(this.preloads)
-            .filter(url => modules.some(module => module.rawRequest === this.preloads[url]))
-        this.addPreloaderAssets(assets, urls)
+        if (! this.preloads) return
+
+        const chunks = this.getChunks(asset, compilation)
+        if (!chunks) {
+            console.log(`This is weird asset: ${asset} was not found in any chunk`)
+            return
+        }
+
+        if (chunks.length === 1) {
+            const chunkModules = chunks[0].getModules()
+            Object.keys(this.preloads).map(url => {
+                const foundMatch = this.preloads[url]
+                    .filter(moduleName => {
+                        return chunkModules.some(module => {
+                            return (module.rawRequest === moduleName) && this.getModule(moduleName, compilation).chunksIterable.size < 2
+                        })
+                    })
+
+                if (foundMatch.length > 0) {
+                    const assets = this.getChunkAssets(chunks[0])
+                    this.addPreloaderAssets(assets, url)
+                }
+            })
+            return
+        }
+
+        // if there is multiple chunks
+        Object.keys(this.preloads).map(url => {
+            const viewModule = this.routeModuleMap[url]
+            if (viewModule) {
+                const chunk = chunks.find(chunk => chunk.getModules().some(module => module.rawRequest === viewModule))
+                if (chunk) {
+                    const assets = this.getChunkAssets(chunk)
+                    this.addPreloaderAssets(assets, url)
+                }
+                return
+            }
+
+            const commonModules = chunks.reduce((accumulator, chunk) => {
+                if (typeof accumulator !== 'array') {
+                    accumulator = accumulator.getModules()
+                }
+                return accumulator.filter(module => chunk.getModules().includes(module))
+            })
+
+            if (commonModules.length < 1) return
+
+            const match = this.preloads[url].some(moduleRawRequest => commonModules.some(module => module.rawRequest === moduleRawRequest))
+            if (!match) {
+                return
+            }
+            this.addPreloaderAssets(asset, url)
+        })
     }
 
     isLateDiscoveredAppShelfAsset(asset, htmlChunks, compilation) {
@@ -78,36 +144,50 @@ class DynamicPreloadWebpackPlugin {
     isRouteSpecificAsset(asset, compilation) {
         if (!this.preloads) return false
 
-        const chunk = this.getChunk(asset, compilation)
-        const modules = chunk.getModules()
-        return modules.some(module => Object.values(this.preloads).includes(module.rawRequest))
+        const chunks = this.getChunks(asset, compilation)
+
+        const allRequiredModules = Object.values(this.preloads)
+            .reduce((accumulator, assets) => accumulator = [ ...accumulator, ...assets ], [])
+
+        return chunks.some(chunk => chunk.getModules().some(module => allRequiredModules.includes(module.rawRequest)))
+    }
+
+    getModule(rawRequest, compilation) {
+        return compilation.modules.find(module => module.rawRequest === rawRequest)
     }
 
     getChunkAssets(chunk) {
         const files = chunk.files
-        const assets = Array.from(chunk.modulesIterable).reduce((accumulator, { buildInfo }) => {
-            let assets = buildInfo && buildInfo.assets && Object.keys(buildInfo.assets)
-            return assets ? accumulator = [ ...accumulator, ...assets ] : accumulator
+        const assets = Array.from(chunk.modulesIterable).reduce((accumulator, module) => {
+            let assets = this.getModuleAssets(module)
+            return accumulator = [ ...accumulator, ...assets ]
         }, [])
         return [ ...files, ...assets ]
     }
 
-    getChunk(asset, compilation) {
-        // TODO: Can more than one chunk point to same file?
-        return compilation.chunks.find(chunk => this.getChunkAssets(chunk).includes(asset))
+    getChunks(asset, compilation) {
+        return compilation.chunks.filter(chunk => this.getChunkAssets(chunk).includes(asset))
     }
 
-    addPreloaderAssets(assets, urls) {
+    getModuleAssets(module) {
+        const { buildInfo } = module
+        if (!buildInfo || !buildInfo.assets) {
+            return []
+        }
+
+        return Object.keys(buildInfo.assets)
+    }
+
+    addPreloaderAssets(assets, url) {
+        if (typeof assets === 'string') {
+            assets = [assets]
+        }
+        
         const assetsObject = assets.reduce((accumulator, asset) => {
             return accumulator = { ...accumulator, [asset]: true}
         }, {})
 
-        urls.map(url => {
-            if (! this.preloader[url]) {
-                this.preloader[url] = {}
-            }
-            this.preloader[url] = { ...this.preloader[url], ...assetsObject }
-        })
+        this.preloader[url] = { ...this.preloader[url], ...assetsObject }
     }
 
     createLink(asset) {

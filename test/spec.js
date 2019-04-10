@@ -94,7 +94,7 @@ it('does not create static preload tags when preloading depends on route', (done
             new HTMLWebpackPlugin(),
             new MiniCssExtractPlugin(),
             new DynamicPreloadWebpackPlugin({
-                '/': './import-picture'
+                urls: { '/': './hero.jpg' }
             })
         ]
     })
@@ -106,8 +106,8 @@ it('does not create static preload tags when preloading depends on route', (done
         expect(err).toBeFalsy()
         expect(JSON.stringify(result.compilation.errors)).toBe('[]')
         const html = result.compilation.assets['index.html'].source()
-        expect(html).not.toContain('<link rel="preload" href="/dist/homepage.chunk.js" as="script">')
-        expect(html).not.toContain('<link rel="preload" href="/dist/hero.jpg" as="image">')
+        expect(html).not.toMatch(/<link .* href="\/dist\/homepage.chunk\.js"/g)
+        expect(html).not.toMatch(/<link .* href="\/dist\/hero\.jpg"/g)
         done()
     })
 })
@@ -121,7 +121,7 @@ it('creates preloader when there are route dependent modules', (done) => {
             new HTMLWebpackPlugin(),
             new MiniCssExtractPlugin(),
             new DynamicPreloadWebpackPlugin({
-                '/': './import-picture'
+                urls: { '/': './hero.jpg' }
             })
         ]
     })
@@ -133,22 +133,61 @@ it('creates preloader when there are route dependent modules', (done) => {
         expect(err).toBeFalsy()
         expect(JSON.stringify(result.compilation.errors)).toBe('[]')
         const preloader = result.compilation.assets['preloader.js'].source()
-        expect(preloader).toContain('hero.jpg')
-        expect(preloader).toContain('homepage.chunk.js')
+        expect(preloader).toMatch('{\"/\":{\"homepage.chunk.js\":true,\"hero.jpg\":true}}')
         done()
     })
 })
 
-it('implicitly preloads all other assets in same chunk as explicitly preloaded module', done => {
+describe('in order to preload desired module faster', () => {
+    it('implicitly preloads all other assets in same chunk as explicitly preloaded module', done => {
+        const config = baseConfig({
+            entry: {
+                app: path.resolve(__dirname, './fixtures/import-two-assets.js')
+            },
+            plugins: [
+                new HTMLWebpackPlugin(),
+                new MiniCssExtractPlugin(),
+                new DynamicPreloadWebpackPlugin({
+                    urls: { '/': './style.css' }
+                })
+            ]
+        })
+    
+        const compiler = webpack(config)
+        compiler.outputFileSystem = fs
+    
+        compiler.run((err, result) => {
+            expect(err).toBeFalsy()
+            expect(JSON.stringify(result.compilation.errors)).toBe('[]')
+            const html = result.compilation.assets['index.html'].source()
+            expect(html).not.toContain('/dist/twoassets.chunk.js')
+            expect(html).not.toContain('/dist/twoassets.css')
+            expect(html).not.toContain('hero.jpg')
+        
+            const preloader = result.compilation.assets['preloader.js'].source()
+            expect(preloader).toMatch('{\"/\":{\"twoassets.css\":true,\"twoassets.chunk.js\":true,\"hero.jpg\":true}}')
+            done()
+        })
+    })
+})
+
+it('can distinguish correct chunk from which to preload remining assets', done => {
     const config = baseConfig({
         entry: {
-            app: path.resolve(__dirname, './fixtures/import-two-assets.js')
+            app: path.resolve(__dirname, './fixtures/same-module-two-chunks.js')
         },
         plugins: [
             new HTMLWebpackPlugin(),
             new MiniCssExtractPlugin(),
             new DynamicPreloadWebpackPlugin({
-                '/': './style.css'
+                routeModuleMap: {
+                    '/': './homepage.js',
+                    '/about': './aboutpage.js'
+                },
+                urls: {
+                    '/': ['./hero.jpg', './style.css'],
+                    '/about': './hero.jpg'
+                }
             })
         ]
     })
@@ -160,14 +199,39 @@ it('implicitly preloads all other assets in same chunk as explicitly preloaded m
         expect(err).toBeFalsy()
         expect(JSON.stringify(result.compilation.errors)).toBe('[]')
         const html = result.compilation.assets['index.html'].source()
-        expect(html).not.toContain('/dist/twoassets.chunk.js')
-        expect(html).not.toContain('/dist/twoassets.css')
+        expect(html).not.toContain('<link rel="preload"')
     
         const preloader = result.compilation.assets['preloader.js'].source()
-        expect(preloader).toContain('hero.jpg')
-        expect(preloader).toContain('twoassets.chunk.js')
-        expect(preloader).toContain('twoassets.css')
+        expect(preloader).toMatch('{\"/\":{\"homepage.css\":true,\"homepage.chunk.js\":true,\"hero.jpg\":true},\"/about\":{\"aboutpage.chunk.js\":true,\"hero.jpg\":true,\"font.woff2\":true}}')
         done()
     })
 })
 
+it('can preload common asset even when there is no route-module mapping', done => {
+    const config = baseConfig({
+        entry: {
+            app: path.resolve(__dirname, './fixtures/same-module-two-chunks.js')
+        },
+        plugins: [
+            new HTMLWebpackPlugin(),
+            new MiniCssExtractPlugin(),
+            new DynamicPreloadWebpackPlugin({
+                urls: {
+                    '/': './hero.jpg'
+                }
+            })
+        ]
+    })
+
+    const compiler = webpack(config)
+    compiler.outputFileSystem = fs
+
+    compiler.run((err, result) => {
+        expect(err).toBeFalsy()
+        expect(JSON.stringify(result.compilation.errors)).toBe('[]')
+    
+        const preloader = result.compilation.assets['preloader.js'].source()
+        expect(preloader).toMatch('{\"/\":{\"hero.jpg\":true}}')
+        done()
+    })
+})

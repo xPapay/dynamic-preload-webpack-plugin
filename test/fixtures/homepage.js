@@ -1,1 +1,2 @@
-export default {}
+import './hero.jpg'
+import './style.css'
