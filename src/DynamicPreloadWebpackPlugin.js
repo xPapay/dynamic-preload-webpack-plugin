@@ -51,7 +51,20 @@ class DynamicPreloadWebpackPlugin {
     }
 
     buildPreloaderSource() {
-        return JSON.stringify(this.preloader)
+        let urls = {}
+        Object.keys(this.preloader).map(url => {
+            urls[url] = Object.keys(this.preloader[url]).map(this.createResource.bind(this))
+        })
+        const serialized = JSON.stringify(urls)
+        return `
+            (${serialized})[window.location.pathname].map(resource => {
+                const link = document.createElement("link")
+                link.href = resource.href
+                link.rel = resource.rel
+                link.as = resource.as || 'script'
+                document.head.appendChild(link)
+            })
+        `
     }
 
     createPreloading(htmlData, compilation) {
@@ -71,7 +84,7 @@ class DynamicPreloadWebpackPlugin {
     }
 
     preloadStatically(asset, html) {
-        const link = this.createLink(path.resolve(this.publicPath, asset))
+        const link = this.createLink(asset)
         return this.appendLinkToHead(link, html)
     }
 
@@ -190,12 +203,16 @@ class DynamicPreloadWebpackPlugin {
         this.preloader[url] = { ...this.preloader[url], ...assetsObject }
     }
 
-    createLink(asset) {
-        const data = {
+    createResource(asset) {
+        return {
             rel: 'preload',
-            href: asset,
+            href: path.resolve(this.publicPath, asset),
             as: this.getAs(asset)
         }
+    }
+
+    createLink(asset) {
+        const data = this.createResource(asset)
         return `<link rel="${data.rel}" href="${data.href}" as="${data.as}">`
     }
 

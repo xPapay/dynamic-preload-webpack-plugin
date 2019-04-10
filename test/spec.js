@@ -6,6 +6,34 @@ const HTMLWebpackPlugin = require('html-webpack-plugin')
 const DynamicPreloadWebpackPlugin = require('../src/DynamicPreloadWebpackPlugin')
 const MiniCssExtractPlugin = require('mini-css-extract-plugin')
 
+expect.extend({
+    toPreload(preloader, asset, url) {
+        const failMessage = () => `Expected ${JSON.stringify(preloader)} to preload ${asset} at ${url}`
+        if (!preloader[url]) {
+            return {
+                message: failMessage,
+                pass: false
+            }
+        }
+        const found = preloader[url].find(resource => resource.href.match(new RegExp(`${asset}$`)))
+        if (!found) {
+            return {
+                message: failMessage,
+                pass: false
+            }
+        }
+        return {
+            message: () => `Expected ${JSON.stringify(preloader)} preloaded ${asset} at ${url}`,
+            pass: true
+        }
+    }
+})
+
+function getPreloaderData(preloader) {
+    const preloaderData = preloader.match(/\((.*)\)/)
+    return preloaderData && preloaderData[1] ? JSON.parse(preloaderData[1]) : {}
+}
+
 const baseConfig = (override) => ({
     entry: {},
     output: {
@@ -132,8 +160,11 @@ it('creates preloader when there are route dependent modules', (done) => {
     compiler.run((err, result) => {
         expect(err).toBeFalsy()
         expect(JSON.stringify(result.compilation.errors)).toBe('[]')
-        const preloader = result.compilation.assets['preloader.js'].source()
-        expect(preloader).toMatch('{\"/\":{\"homepage.chunk.js\":true,\"hero.jpg\":true}}')
+        expect(result.compilation.assets['preloader.js']).toBeDefined()
+        const preloaderSource = result.compilation.assets['preloader.js'].source()
+        const preloader = getPreloaderData(preloaderSource)
+        expect(preloader).toPreload('homepage.chunk.js', '/')
+        expect(preloader).toPreload('hero.jpg', '/')
         done()
     })
 })
@@ -164,8 +195,11 @@ describe('in order to preload desired module faster', () => {
             expect(html).not.toContain('/dist/twoassets.css')
             expect(html).not.toContain('hero.jpg')
         
-            const preloader = result.compilation.assets['preloader.js'].source()
-            expect(preloader).toMatch('{\"/\":{\"twoassets.css\":true,\"twoassets.chunk.js\":true,\"hero.jpg\":true}}')
+            const preloaderSource = result.compilation.assets['preloader.js'].source()
+            const preloader = getPreloaderData(preloaderSource)
+            expect(preloader).toPreload('twoassets.css', '/')
+            expect(preloader).toPreload('twoassets.chunk.js', '/')
+            expect(preloader).toPreload('hero.jpg', '/')
             done()
         })
     })
@@ -201,8 +235,14 @@ it('can distinguish correct chunk from which to preload remining assets', done =
         const html = result.compilation.assets['index.html'].source()
         expect(html).not.toContain('<link rel="preload"')
     
-        const preloader = result.compilation.assets['preloader.js'].source()
-        expect(preloader).toMatch('{\"/\":{\"homepage.css\":true,\"homepage.chunk.js\":true,\"hero.jpg\":true},\"/about\":{\"aboutpage.chunk.js\":true,\"hero.jpg\":true,\"font.woff2\":true}}')
+        const preloaderSource = result.compilation.assets['preloader.js'].source()
+        const preloader = getPreloaderData(preloaderSource)
+        expect(preloader).toPreload('homepage.css', '/')
+        expect(preloader).toPreload('homepage.chunk.js', '/')
+        expect(preloader).toPreload('hero.jpg', '/')
+        expect(preloader).toPreload('aboutpage.chunk.js', '/about')
+        expect(preloader).toPreload('hero.jpg', '/about')
+        expect(preloader).toPreload('font.woff2', '/about')
         done()
     })
 })
@@ -229,9 +269,10 @@ it('can preload common asset even when there is no route-module mapping', done =
     compiler.run((err, result) => {
         expect(err).toBeFalsy()
         expect(JSON.stringify(result.compilation.errors)).toBe('[]')
-    
-        const preloader = result.compilation.assets['preloader.js'].source()
-        expect(preloader).toMatch('{\"/\":{\"hero.jpg\":true}}')
+
+        const preloaderSource = result.compilation.assets['preloader.js'].source()
+        const preloader = getPreloaderData(preloaderSource)
+        expect(preloader).toPreload('hero.jpg', '/')
         done()
     })
 })
