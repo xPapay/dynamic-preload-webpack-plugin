@@ -83,7 +83,7 @@ class DynamicPreloadWebpackPlugin {
             source: () => preloaderSource,
             size: () => preloaderSource.length
         }
-        return `<script src="${path.resolve(this.publicPath, name)}">`
+        return `<script src="${path.resolve(this.publicPath, name)}"></script>`
     }
 
     preloadStatically(asset, html) {
