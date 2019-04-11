@@ -46,7 +46,9 @@ class DynamicPreloadWebpackPlugin {
         })
         const serialized = JSON.stringify(urls)
         return `
-            (${serialized})[window.location.pathname].map(resource => {
+            const urls = (${serialized})
+            if (!urls[window.location.pathname]) return
+            urls[window.location.pathname].map(resource => {
                 const link = document.createElement("link")
                 link.href = resource.href
                 link.rel = resource.rel
