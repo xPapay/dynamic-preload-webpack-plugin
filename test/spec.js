@@ -21,10 +21,11 @@ expect.extend({
                 message: failMessage,
                 pass: false
             }
-        }
-        return {
-            message: () => `Expected ${JSON.stringify(preloader)} preloaded ${asset} at ${url}`,
-            pass: true
+        } else {
+            return {
+                message: () => `Expected ${JSON.stringify(preloader)} not preloaded ${asset} at ${url}`,
+                pass: true
+            }
         }
     }
 })
@@ -207,7 +208,7 @@ describe('in order to preload desired module faster', () => {
     })
 })
 
-it('can distinguish correct chunk from which to preload remining assets', done => {
+it('can distinguish correct chunk from which to preload remaining assets', done => {
     const config = baseConfig({
         entry: {
             app: path.resolve(__dirname, './fixtures/same-module-two-chunks.js')
@@ -242,9 +243,14 @@ it('can distinguish correct chunk from which to preload remining assets', done =
         expect(preloader).toPreload('homepage.css', '/')
         expect(preloader).toPreload('homepage.chunk.js', '/')
         expect(preloader).toPreload('hero.jpg', '/')
+        expect(preloader).not.toPreload('aboutpage.chunk.js', '/')
+        expect(preloader).not.toPreload('font.woff2', '/')
+
         expect(preloader).toPreload('aboutpage.chunk.js', '/about')
         expect(preloader).toPreload('hero.jpg', '/about')
         expect(preloader).toPreload('font.woff2', '/about')
+        expect(preloader).not.toPreload('homepage.css', '/about')
+        expect(preloader).not.toPreload('homepage.chunk.css', '/about')
         done()
     })
 })
@@ -275,6 +281,40 @@ it('can preload common asset even when there is no route-module mapping', done =
         const preloaderSource = result.compilation.assets['preloader.js'].source()
         const preloader = getPreloaderData(preloaderSource)
         expect(preloader).toPreload('hero.jpg', '/')
+        done()
+    })
+})
+
+it('can preload assets even when module it is concatenated module', done => {
+    const config = baseConfig({
+        entry: {
+            app: path.resolve(__dirname, './fixtures/app.js')
+        },
+        plugins: [
+            new HTMLWebpackPlugin(),
+            new MiniCssExtractPlugin(),
+            new DynamicPreloadWebpackPlugin({
+                urls: {
+                    '/': ['./passengersTab.js']
+                }
+            })
+        ]
+    })
+
+    const compiler = webpack(config)
+    compiler.outputFileSystem = fs
+
+    compiler.run((err, result) => {
+        expect(err).toBeFalsy()
+        expect(JSON.stringify(result.compilation.errors)).toBe('[]')
+        const html = result.compilation.assets['index.html'].source()
+        expect(html).not.toContain('<link rel="preload"')
+        const preloaderFile = result.compilation.assets['preloader.js']
+        expect(preloaderFile).toBeDefined()
+        const preloaderSource = preloaderFile.source()
+        const preloader = getPreloaderData(preloaderSource)
+        expect(preloader).toPreload('passengerstab.chunk.js', '/')
+        expect(preloader).toPreload('font.woff2', '/')
         done()
     })
 })

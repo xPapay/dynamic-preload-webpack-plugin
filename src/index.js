@@ -1,49 +1,86 @@
 const path = require('path')
 
 class DynamicPreloadWebpackPlugin {
-    constructor(options) {
-        this.preloads = null
-        this.routeModuleMap = {}
-        this.preloader = {}
-        this.publicPath = ''
-        this.parseOptions(options)
+    constructor({ urls, routeModuleMap } = {}) {
+        this.preloads = this.parseUrls(urls)
+        this.routeModuleMap = routeModuleMap
+        this.routeToAssets = {}
+        this.publicPath = '/'
     }
 
-    parseOptions(options) {
-        if (!options) return
-
-        if (options.urls) {
-            Object.keys(options.urls).map(url => {
-                if (typeof options.urls[url] === 'string') {
-                    options.urls[url] = [options.urls[url]]
-                }
-            })
-            this.preloads = options.urls
-        }
-
-        if (options.routeModuleMap) {
-            this.routeModuleMap = options.routeModuleMap
-        }
+    parseUrls(urls) {
+        if (!urls) return {}
+        return Object.keys(urls).reduce((acc, url) => {
+            const preloads = urls[url] instanceof Array ? urls[url] : [urls[url]]
+            return acc = { ...acc, [url]: preloads }
+        }, {})
     }
 
     apply(compiler) {
         compiler.hooks.compilation.tap(this.constructor.name, compilation => {
-            this.publicPath = compilation.options.output.publicPath || compilation.options.output.path
+            this.publicPath = compilation.options.output.publicPath || '/'
             compilation.hooks.htmlWebpackPluginAfterHtmlProcessing.tapAsync(this.constructor.name, (htmlData, cb) => {
                 cb(null, this.createPreloading(htmlData, compilation))
             })
         })
     }
 
+    createPreloading(htmlData, compilation) {
+        Object.keys(this.preloads).map(url => {
+            this.routeToAssets[url] = {}
+            const modules = this.preloads[url]
+            modules.map(moduleName => {
+                this.mapModuleToAsset(moduleName, url, compilation)
+            })
+            // TODO: preload late discovered assets. (assets inside scripts which are loaded by html)
+            this.routeToAssets[url] = Object.keys(this.routeToAssets[url])
+                .filter(asset => !this.getHtmlAssests(htmlData).includes(asset))
+        })
+
+        if (this.hasLateDiscoveredAssetsInAppShelf(compilation, htmlData)) {
+            const assets = this.getLateDiscoveredAssets(compilation, htmlData)
+            assets.map(asset => {
+                const link = this.createLink(asset)
+                htmlData.html = this.appendToHead(link, htmlData.html)
+            })
+        }
+        
+        if (this.hasDynamicPreloads()) {
+            const scriptTag = this.createPreloadScript(compilation)
+            // TODO: let HtmlWebpack plugin handle adding script
+            htmlData.html = this.appendToHead(scriptTag, htmlData.html)
+        }
+
+        return htmlData
+    }
+
+    hasLateDiscoveredAssetsInAppShelf(compilation, htmlData) {
+        return this.getLateDiscoveredAssets(compilation, htmlData).length > 0
+    }
+
+    getLateDiscoveredAssets(compilation, htmlData) {
+        return Object.keys(htmlData.assets.chunks).reduce((acc, chunkName) => {
+            const chunk = compilation.chunks.find(chunk => chunk.name === chunkName)
+            const assets = Object.keys(this.getChunkAssets(chunk))
+            return acc = [ ...acc, ...assets ]
+        }, [])
+    }
+
+    createLink(asset) {
+        const data = this.createResource(asset)
+        return `<link rel="${data.rel}" href="${data.href}" as="${data.as}">`
+    }
+
     hasDynamicPreloads() {
-        return ! (Object.entries(this.preloader).length === 0 && this.preloader.constructor === Object)
+        return !(Object.entries(this.routeToAssets).length === 0 && this.routeToAssets.constructor === Object)
     }
 
     buildPreloaderSource() {
-        let urls = {}
-        Object.keys(this.preloader).map(url => {
-            urls[url] = Object.keys(this.preloader[url]).map(this.createResource.bind(this))
-        })
+        const urls = Object.keys(this.routeToAssets).reduce((acc, url) => {
+            let resources = this.routeToAssets[url].map(this.createResource.bind(this))
+            return acc = { ...acc, [url]: resources }
+        }, {})
+
         const serialized = JSON.stringify(urls)
         return `
             const urls = (${serialized})
@@ -59,27 +96,6 @@ class DynamicPreloadWebpackPlugin {
         `
     }
 
-    createPreloading(htmlData, compilation) {
-        const { assets } = compilation
-        Object.keys(assets).map(asset => {
-            if (this.isLoadedByHtmlTemplate(path.resolve(this.publicPath, asset), htmlData.assets)) return
-            if (this.isLateDiscoveredAppShelfAsset(asset, Object.keys(htmlData.assets.chunks), compilation)) {
-                return htmlData.html = this.preloadStatically(asset, htmlData.html)
-            }
-
-            if (this.isRouteSpecificAsset(asset, compilation)) {
-                this.preloadDynamically(asset, compilation)
-            }
-        })
-
-        if (this.hasDynamicPreloads()) {
-            const script = this.createPreloadScript(compilation, 'preloader.js')
-            htmlData.html = this.appendToHead(script, htmlData.html)
-        }
-
-        return htmlData
-    }
-
     createPreloadScript(compilation, name = 'preloader.js') {
         const preloaderSource = this.buildPreloaderSource()
         compilation.assets[name] = {
@@ -89,137 +105,12 @@ class DynamicPreloadWebpackPlugin {
         return `<script src="${path.resolve(this.publicPath, name)}"></script>`
     }
 
-    preloadStatically(asset, html) {
-        const link = this.createLink(asset)
-        return this.appendToHead(link, html)
-    }
-
-    preloadDynamically(asset, compilation) {
-        if (! this.preloads) return
-
-        const chunks = this.getChunks(asset, compilation)
-        if (!chunks) {
-            console.log(`This is weird asset: ${asset} was not found in any chunk`)
-            return
-        }
-
-        if (chunks.length === 1) {
-            const chunkModules = chunks[0].getModules()
-            Object.keys(this.preloads).map(url => {
-                const foundMatch = this.preloads[url]
-                    .filter(moduleName => {
-                        return chunkModules.some(module => {
-                            return (module.rawRequest === moduleName) && this.getModule(moduleName, compilation).chunksIterable.size < 2
-                        })
-                    })
-
-                if (foundMatch.length > 0) {
-                    const assets = this.getChunkAssets(chunks[0])
-                    this.addPreloaderAssets(assets, url)
-                }
-            })
-            return
-        }
-
-        // if there is multiple chunks
-        Object.keys(this.preloads).map(url => {
-            const viewModule = this.routeModuleMap[url]
-            if (viewModule) {
-                const chunk = chunks.find(chunk => chunk.getModules().some(module => module.rawRequest === viewModule))
-                if (chunk) {
-                    const assets = this.getChunkAssets(chunk)
-                    this.addPreloaderAssets(assets, url)
-                }
-                return
-            }
-
-            const commonModules = chunks.reduce((accumulator, chunk) => {
-                if (typeof accumulator !== 'array') {
-                    accumulator = accumulator.getModules()
-                }
-                return accumulator.filter(module => chunk.getModules().includes(module))
-            })
-
-            if (commonModules.length < 1) return
-
-            const match = this.preloads[url].some(moduleRawRequest => commonModules.some(module => module.rawRequest === moduleRawRequest))
-            if (!match) {
-                return
-            }
-            this.addPreloaderAssets(asset, url)
-        })
-    }
-
-    isLateDiscoveredAppShelfAsset(asset, htmlChunks, compilation) {
-        return compilation.chunks.filter(chunk => htmlChunks.indexOf(chunk.name) > -1)
-            .some(chunk => this.getChunkAssets(chunk).includes(asset))
-    }
-
-    isLoadedByHtmlTemplate(asset, htmlAssets) {
-        const allHtmlAssets = [ ...htmlAssets.css, ...htmlAssets.js ]
-        return allHtmlAssets.find(htmlAsset => htmlAsset === asset)
-    }
-
-    isRouteSpecificAsset(asset, compilation) {
-        if (!this.preloads) return false
-
-        const chunks = this.getChunks(asset, compilation)
-
-        const allRequiredModules = Object.values(this.preloads)
-            .reduce((accumulator, assets) => accumulator = [ ...accumulator, ...assets ], [])
-
-        return chunks.some(chunk => chunk.getModules().some(module => allRequiredModules.includes(module.rawRequest)))
-    }
-
-    getModule(rawRequest, compilation) {
-        return compilation.modules.find(module => module.rawRequest === rawRequest)
-    }
-
-    getChunkAssets(chunk) {
-        const files = chunk.files
-        const assets = Array.from(chunk.modulesIterable).reduce((accumulator, module) => {
-            let assets = this.getModuleAssets(module)
-            return accumulator = [ ...accumulator, ...assets ]
-        }, [])
-        return [ ...files, ...assets ]
-    }
-
-    getChunks(asset, compilation) {
-        return compilation.chunks.filter(chunk => this.getChunkAssets(chunk).includes(asset))
-    }
-
-    getModuleAssets(module) {
-        const { buildInfo } = module
-        if (!buildInfo || !buildInfo.assets) {
-            return []
-        }
-
-        return Object.keys(buildInfo.assets)
-    }
-
-    addPreloaderAssets(assets, url) {
-        if (typeof assets === 'string') {
-            assets = [assets]
-        }
-        
-        const assetsObject = assets.reduce((accumulator, asset) => {
-            return accumulator = { ...accumulator, [asset]: true}
-        }, {})
-
-        this.preloader[url] = { ...this.preloader[url], ...assetsObject }
-    }
-
-    createResource(asset) {
+    createResource(href) {
         return {
             rel: 'preload',
-            href: path.resolve(this.publicPath, asset),
-            as: this.getAs(asset)
+            href,
+            as: this.getAs(href)
         }
-    }
-
-    createLink(asset) {
-        const data = this.createResource(asset)
-        return `<link rel="${data.rel}" href="${data.href}" as="${data.as}">`
     }
 
     appendToHead(htmlToAppend, html) {
@@ -230,6 +121,83 @@ class DynamicPreloadWebpackPlugin {
         if (file.match(/\.(jpe?g|png|svg|gif)$/)) return 'image'
         if (file.match(/\.(css)$/)) return 'style'
         return 'script'
+    }
+
+    mapModuleToAsset(moduleName, url, compilation) {
+        const module = this.getModuleByName(moduleName, compilation)
+        if (!module) {
+            console.warn(`Module: ${moduleName} not found. Did you make typo?`)
+            return
+        }
+        const chunks = Array.from(module.chunksIterable)
+        if (chunks.length === 1) {
+            const allAssets = this.getAllChunkAssets(chunks[0])
+            this.routeToAssets[url] = { ...this.routeToAssets[url], ...allAssets }
+            return
+        }
+        // if there is more chunks
+        // try to load what we can even without routeModuleMapping
+        const allAssets = this.getModuleAssets(module)
+        this.routeToAssets[url] = { ...this.routeToAssets[url], ...allAssets }
+        // and if we have routeModuleMapping it's a bonus
+        this.routeModuleMap && this.routeModuleMap[url] && this.mapModuleToAsset(this.routeModuleMap[url], url, compilation)
+    }
+
+    getModuleByName(name, compilation) {
+        return compilation.modules.find(module => {
+            return module.rawRequest === name || (module.modules && this.flatModules(module.modules).some(nestedModule => nestedModule.rawRequest === name))
+        })
+    }
+
+    flatModules(modules) {
+        const flat = module => {
+            if (module.constructor.name === 'ConcatenatedModule' || module.modules) {
+                return module.modules.reduce((acc, module) => acc = [ ...acc, ...flat(module)], [])
+            }
+            return [module]
+        }
+
+        return modules.reduce((acc, module) => acc = [ ...acc, ...flat(module)], [])
+    }
+
+    getChunkAssets(chunk) {
+        return Array.from(chunk.modulesIterable).reduce((acc, module) => {
+            return acc = { ...acc, ...this.getModuleAssets(module) }
+        }, {})
+    }
+
+    getChunkFiles(chunk) {
+        return chunk.files.reduce((acc, file) => acc = { ...acc, [this.getPublicPath(file)]: true }, {})
+    }
+
+    getAllChunkAssets(chunk) {
+        const files = this.getChunkFiles(chunk)
+        const assets = this.getChunkAssets(chunk)
+        return { ...files, ...assets }
+    }
+
+    getModuleAssets(module) {
+        const { buildInfo } = module
+        if (!buildInfo || !buildInfo.assets) {
+            return {}
+        }
+
+        return Object.keys(buildInfo.assets).reduce((acc, asset) => asset = { ...acc, [this.getPublicPath(asset)]: true }, {})
+    }
+
+    getPublicPath(asset) {
+        return path.resolve(this.publicPath, asset)
+    }
+
+    getHtmlAssests(htmlData) {
+        const { assets } = htmlData
+        return [ ...assets.css, ...assets.js ]
+    }
+
+    getCompilationAssets(compilation) {
+        return Object
+            .keys(compilation.assets)
+            .reduce((acc, asset) => acc = [ ...acc, this.getPublicPath(asset)], [])
     }
 }
 
